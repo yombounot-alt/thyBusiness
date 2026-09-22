@@ -1,0 +1,447 @@
+// THY Business — schéma MVP "commerçant solo"
+// Voir docs/decisions/0004-out-of-scope-tables.md pour les tables volontairement différées.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Auth / Users
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String    @id @default(uuid())
+  phone           String    @unique
+  phoneVerifiedAt DateTime? @map("phone_verified_at")
+  passwordHash    String    @map("password_hash")
+  fullName        String    @map("full_name")
+  email           String?   @unique
+  locale          String    @default("fr")
+  lastLoginAt     DateTime? @map("last_login_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  refreshTokens          RefreshToken[]
+  ownedBusinesses        Business[]          @relation("BusinessOwner")
+  memberships            BusinessMember[]
+  recordedMovements      InventoryMovement[] @relation("MovementRecordedBy")
+  soldSales              Sale[]              @relation("SalesSoldBy")
+  receivedPayments       Payment[]           @relation("PaymentsReceivedBy")
+  grantedCredits         CustomerCredit[]    @relation("CreditsCreatedBy")
+  receivedCreditPayments CreditPayment[]     @relation("CreditPaymentsReceivedBy")
+  recordedExpenses       Expense[]           @relation("ExpensesRecordedBy")
+  startedManualPayments  ManualPayment[]     @relation("ManualPaymentsStartedBy")
+  verifiedManualPayments ManualPayment[]     @relation("ManualPaymentsVerifiedBy")
+  rejectedManualPayments ManualPayment[]     @relation("ManualPaymentsRejectedBy")
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model OtpVerification {
+  id          String    @id @default(uuid())
+  phone       String
+  code        String
+  purpose     String
+  expiresAt   DateTime  @map("expires_at")
+  consumedAt  DateTime? @map("consumed_at")
+  attempts    Int       @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([phone, purpose])
+  @@map("otp_verifications")
+}
+
+// ---------------------------------------------------------------------------
+// Businesses (tenants)
+// ---------------------------------------------------------------------------
+
+model Business {
+  id           String   @id @default(uuid())
+  name         String
+  businessType String   @map("business_type")
+  currency     String   @default("GNF")
+  phone        String?
+  address      String?
+  timezone     String   @default("Africa/Conakry")
+  ownerId      String   @map("owner_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  owner              User                @relation("BusinessOwner", fields: [ownerId], references: [id])
+  members            BusinessMember[]
+  categories         Category[]
+  products           Product[]
+  inventoryMovements InventoryMovement[]
+  sales              Sale[]
+  payments           Payment[]
+  customers          Customer[]
+  customerCredits    CustomerCredit[]
+  creditPayments     CreditPayment[]
+  expenses           Expense[]
+  paymentMethods     PaymentMethod[]
+  manualPayments     ManualPayment[]
+
+  @@map("businesses")
+}
+
+model BusinessMember {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  userId     String   @map("user_id")
+  role       String   @default("owner")
+  status     String   @default("active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, userId])
+  @@index([businessId])
+  @@map("business_members")
+}
+
+// ---------------------------------------------------------------------------
+// Produits / Stock
+// ---------------------------------------------------------------------------
+
+model Category {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  name       String
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  business Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([businessId, name])
+  @@index([businessId])
+  @@map("categories")
+}
+
+model Product {
+  id                String   @id @default(uuid())
+  businessId        String   @map("business_id")
+  categoryId        String?  @map("category_id")
+  name              String
+  sku               String?
+  barcode           String?
+  unit              String   @default("unite")
+  purchasePrice     Decimal  @default(0) @map("purchase_price") @db.Decimal(14, 2)
+  salePrice         Decimal  @map("sale_price") @db.Decimal(14, 2)
+  currentStock      Decimal  @default(0) @map("current_stock") @db.Decimal(14, 2)
+  lowStockThreshold Decimal? @map("low_stock_threshold") @db.Decimal(14, 2)
+  isActive          Boolean  @default(true) @map("is_active")
+  imageKey          String?  @map("image_key")
+  description       String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  business  Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  category  Category?           @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  movements InventoryMovement[]
+  saleItems SaleItem[]
+
+  @@index([businessId, name])
+  @@index([businessId, barcode])
+  @@map("products")
+}
+
+model InventoryMovement {
+  id            String   @id @default(uuid())
+  businessId    String   @map("business_id")
+  productId     String   @map("product_id")
+  type          String
+  quantity      Decimal  @db.Decimal(14, 2)
+  unitCost      Decimal? @map("unit_cost") @db.Decimal(14, 2)
+  referenceType String?  @map("reference_type")
+  referenceId   String?  @map("reference_id")
+  note          String?
+  createdBy     String   @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  product       Product  @relation(fields: [productId], references: [id])
+  recordedByUser User    @relation("MovementRecordedBy", fields: [createdBy], references: [id])
+
+  @@index([businessId, productId, createdAt])
+  @@map("inventory_movements")
+}
+
+// ---------------------------------------------------------------------------
+// Ventes / Caisse
+// ---------------------------------------------------------------------------
+
+model Sale {
+  id            String   @id @default(uuid())
+  businessId    String   @map("business_id")
+  customerId    String?  @map("customer_id")
+  saleNumber    String   @map("sale_number")
+  // Client-generated key: retrying the same checkout (network retry, double tap) returns the
+  // original sale instead of selling twice. NULL for sales created without one.
+  clientRequestId String? @map("client_request_id")
+  subtotal      Decimal  @db.Decimal(14, 2)
+  discountTotal Decimal  @default(0) @map("discount_total") @db.Decimal(14, 2)
+  total         Decimal  @db.Decimal(14, 2)
+  amountPaid    Decimal  @default(0) @map("amount_paid") @db.Decimal(14, 2)
+  amountDue     Decimal  @default(0) @map("amount_due") @db.Decimal(14, 2)
+  status        String   @default("completed")
+  soldBy        String   @map("sold_by")
+  soldAt        DateTime @default(now()) @map("sold_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  business Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customer Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  seller   User             @relation("SalesSoldBy", fields: [soldBy], references: [id])
+  items    SaleItem[]
+  payments Payment[]
+  credits  CustomerCredit[]
+  // Set when the sale was created by a payment the owner verified.
+  manualPayment ManualPayment?
+
+  @@unique([businessId, saleNumber])
+  @@unique([businessId, clientRequestId])
+  @@index([businessId, soldAt])
+  @@map("sales")
+}
+
+model SaleItem {
+  id                  String  @id @default(uuid())
+  saleId              String  @map("sale_id")
+  productId           String  @map("product_id")
+  productNameSnapshot String  @map("product_name_snapshot")
+  unitPrice           Decimal @map("unit_price") @db.Decimal(14, 2)
+  unitCostSnapshot    Decimal @map("unit_cost_snapshot") @db.Decimal(14, 2)
+  quantity            Decimal @db.Decimal(14, 2)
+  discount            Decimal @default(0) @db.Decimal(14, 2)
+  lineTotal           Decimal @map("line_total") @db.Decimal(14, 2)
+
+  sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([saleId])
+  @@map("sale_items")
+}
+
+model Payment {
+  id                String   @id @default(uuid())
+  businessId        String   @map("business_id")
+  saleId            String   @map("sale_id")
+  method            String
+  amount            Decimal  @db.Decimal(14, 2)
+  receivedBy        String   @map("received_by")
+  providerReference String?  @map("provider_reference")
+  receivedAt        DateTime @default(now()) @map("received_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  sale     Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  receiver User     @relation("PaymentsReceivedBy", fields: [receivedBy], references: [id])
+
+  @@index([businessId, saleId])
+  @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// Paiements directs (Orange Money, Mobile Money, code marchand) — voir docs/decisions/0011-manual-payments.md
+// ---------------------------------------------------------------------------
+
+// A way for customers to pay the owner directly. Everything the customer is shown (number, code,
+// holder, instructions) is filled in by the owner in the app — none of it lives in the source code.
+// Several accounts of the same operator are allowed (two Orange Money numbers…); isActive says
+// which ones are offered.
+model PaymentMethod {
+  id           String   @id @default(uuid())
+  businessId   String   @map("business_id")
+  // orange_money | mobile_money | merchant_code | other
+  provider     String
+  displayName  String   @map("display_name")
+  // Holder of the account, shown so the customer can check who they are paying.
+  accountName  String?  @map("account_name")
+  phoneNumber  String?  @map("phone_number")
+  merchantCode String?  @map("merchant_code")
+  // Custom steps shown to the customer; empty = the default steps of the provider.
+  instructions String?
+  // Code dialled by "Payer maintenant". Depends on operator and country, so it is the owner's to
+  // define; may contain {numero}, {montant} and {code}.
+  ussdCode     String?  @map("ussd_code")
+  logoKey      String?  @map("logo_key")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  business Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  payments ManualPayment[]
+
+  @@index([businessId, isActive])
+  @@map("payment_methods")
+}
+
+// A payment made outside any gateway: the customer sends money to the owner's number or code, says
+// so, and the OWNER checks that it really arrived. Nothing is sold until the owner verifies it —
+// this row holds the checkout that will become the sale. Status: pending (the customer has been
+// shown where to pay) → submitted (they declared it) → verified | rejected, or cancelled.
+model ManualPayment {
+  id              String  @id @default(uuid())
+  businessId      String  @map("business_id")
+  // The user who rang the basket up: recorded as the seller when the sale is created.
+  createdBy       String  @map("created_by")
+  paymentMethodId String? @map("payment_method_id")
+  // What the customer was told, frozen now: the owner may edit or remove the method later.
+  methodProvider  String  @map("method_provider")
+  methodName      String  @map("method_name")
+  sentToHolder    String? @map("sent_to_holder")
+  sentToPhone     String? @map("sent_to_phone")
+  sentToCode      String? @map("sent_to_code")
+  // One per basket: asking to pay the same checkout twice returns this payment.
+  clientRequestId String  @map("client_request_id")
+  amount          Decimal @db.Decimal(14, 2)
+  currency        String  @default("GNF")
+  status          String  @default("pending")
+  // What to record once verified: items with the prices the customer was shown, customer, discount.
+  checkout Json
+  saleId   String? @unique @map("sale_id")
+
+  // Declared by the payer — never proof by itself.
+  payerName            String?   @map("payer_name")
+  payerPhone           String?   @map("payer_phone")
+  transactionReference String?   @map("transaction_reference")
+  // The reference lower-cased and stripped of separators, so "TX-12 34" and "tx1234" are the same.
+  // A transaction id can be used once: the partial unique index on
+  // (business_id, method_provider, reference_key) WHERE status IN ('submitted', 'verified')
+  // lives in the migration (Prisma cannot express it).
+  referenceKey  String?   @map("reference_key")
+  amountSent    Decimal?  @map("amount_sent") @db.Decimal(14, 2)
+  paidAt        DateTime? @map("paid_at")
+  proofKey      String?   @map("proof_key")
+  submittedAt   DateTime? @map("submitted_at")
+  verifiedAt    DateTime? @map("verified_at")
+  verifiedBy    String?   @map("verified_by")
+  rejectedAt    DateTime? @map("rejected_at")
+  rejectedBy    String?   @map("rejected_by")
+  rejectionReason String? @map("rejection_reason")
+  cancelledAt   DateTime? @map("cancelled_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  business Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  creator  User           @relation("ManualPaymentsStartedBy", fields: [createdBy], references: [id])
+  verifier User?          @relation("ManualPaymentsVerifiedBy", fields: [verifiedBy], references: [id])
+  rejecter User?          @relation("ManualPaymentsRejectedBy", fields: [rejectedBy], references: [id])
+  method   PaymentMethod? @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+  sale     Sale?          @relation(fields: [saleId], references: [id], onDelete: SetNull)
+
+  @@unique([businessId, clientRequestId])
+  @@index([businessId, status, createdAt])
+  @@map("manual_payments")
+}
+
+// ---------------------------------------------------------------------------
+// Clients / Crédits / Dépenses
+// ---------------------------------------------------------------------------
+
+model Customer {
+  id             String   @id @default(uuid())
+  businessId     String   @map("business_id")
+  fullName       String   @map("full_name")
+  phone          String?
+  address        String?
+  notes          String?
+  currentBalance Decimal  @default(0) @map("current_balance") @db.Decimal(14, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  business Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  sales    Sale[]
+  credits  CustomerCredit[]
+  payments CreditPayment[]
+
+  @@index([businessId, fullName])
+  @@index([businessId, phone])
+  @@map("customers")
+}
+
+model CustomerCredit {
+  id              String    @id @default(uuid())
+  businessId      String    @map("business_id")
+  customerId      String    @map("customer_id")
+  saleId          String?   @map("sale_id")
+  originalAmount  Decimal   @map("original_amount") @db.Decimal(14, 2)
+  remainingAmount Decimal   @map("remaining_amount") @db.Decimal(14, 2)
+  status          String    @default("open")
+  dueDate         DateTime? @map("due_date") @db.Date
+  note            String?
+  createdBy       String    @map("created_by")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  business Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customer Customer        @relation(fields: [customerId], references: [id])
+  sale     Sale?           @relation(fields: [saleId], references: [id])
+  creator  User            @relation("CreditsCreatedBy", fields: [createdBy], references: [id])
+  payments CreditPayment[]
+
+  @@index([businessId, customerId])
+  @@index([businessId, status])
+  @@map("customer_credits")
+}
+
+model CreditPayment {
+  id               String   @id @default(uuid())
+  businessId       String   @map("business_id")
+  customerId       String   @map("customer_id")
+  customerCreditId String   @map("customer_credit_id")
+  amount           Decimal  @db.Decimal(14, 2)
+  method           String
+  receivedBy       String   @map("received_by")
+  note             String?
+  paidAt           DateTime @default(now()) @map("paid_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  business       Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customer       Customer       @relation(fields: [customerId], references: [id])
+  customerCredit CustomerCredit @relation(fields: [customerCreditId], references: [id])
+  receiver       User           @relation("CreditPaymentsReceivedBy", fields: [receivedBy], references: [id])
+
+  @@index([businessId, customerId])
+  @@map("credit_payments")
+}
+
+model Expense {
+  id          String   @id @default(uuid())
+  businessId  String   @map("business_id")
+  category    String
+  amount      Decimal  @db.Decimal(14, 2)
+  description String?
+  expenseDate DateTime @default(now()) @map("expense_date") @db.Date
+  recordedBy  String   @map("recorded_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  recorder User     @relation("ExpensesRecordedBy", fields: [recordedBy], references: [id])
+
+  @@index([businessId, expenseDate])
+  @@map("expenses")
+}

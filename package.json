@@ -1,0 +1,10 @@
+{
+  "name": "thy-business",
+  "private": true,
+  "workspaces": [
+    "apps/api"
+  ],
+  "scripts": {
+    "api": "npm run start:dev --workspace=apps/api"
+  }
+}
