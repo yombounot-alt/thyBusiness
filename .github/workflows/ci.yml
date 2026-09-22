@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  api:
+    name: Backend (NestJS)
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://thybusiness:thybusiness@localhost:5434/thybusiness_test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: thybusiness
+          POSTGRES_PASSWORD: thybusiness
+          POSTGRES_DB: thybusiness_test
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U thybusiness -d thybusiness_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare test environment file
+        run: cp apps/api/.env.test.example apps/api/.env.test
+
+      - name: Prisma generate
+        run: npm run prisma:generate --workspace=apps/api
+
+      - name: Apply migrations to the test database
+        run: npm run prisma:migrate:deploy --workspace=apps/api
+
+      - name: Unit tests
+        run: npm test --workspace=apps/api
+
+      - name: E2E tests
+        run: npm run test:e2e --workspace=apps/api
+
+  mobile:
+    name: Mobile (Flutter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: apps/mobile
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: apps/mobile
+        run: flutter analyze
+
+      - name: Test
+        working-directory: apps/mobile
+        run: flutter test
